@@ -1,0 +1,300 @@
+================================================================================
+  HIPERPARÁMETROS DEL MODELO MDLF
+  Basado en: Zhao et al., 2022 — "A Multi-View-Based Deep Learning Framework
+             for Individual Trip Destination Prediction in Public Transportation"
+================================================================================
+
+Columnas
+  Parámetro      : nombre en mdlf_params
+  Qué controla   : efecto sobre el modelo
+  Nuestro valor  : valor en prueba_MDLF_extended.ipynb
+  Paper          : valor reportado en Zhao et al. 2022 (— si no se menciona)
+  Probar         : valores candidatos a experimentar
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 1 — REGIÓN: LDA (Region Function)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : n_topics_cercanias  (K)
+Qué controla     : Número de tópicos LDA. Determina la dimensión del vector
+                   de función regional por estación (theta_c). Más tópicos =
+                   representación más rica pero más riesgo de sobreajuste con
+                   pocas estaciones.
+Nuestro valor    : 16
+Paper            : 128  (NO FUNCIONA BIEN PORLO QUE SE HA INTENTADO)(el paper usa D_R=256 total: 128 region function + 128
+                   region remoteness, probando {32,64,128,256,512} por bloque)
+  *** DISCREPANCIA: usamos K=16 tópicos LDA vs 128 del paper. Subir K acercaría
+      el modelo al paper pero requiere más datos OD para estimar bien los tópicos.
+Probar           : 16, 32, 64, 128
+
+Parámetro        : lda_max_iter
+Qué controla     : Iteraciones del algoritmo EM variacional de sklearn para
+                   ajustar LDA. Más iteraciones = convergencia más precisa
+                   pero más lento. Con datos escasos 20 suele ser suficiente.
+Nuestro valor    : 20  (default de RegionFunctionLDA)
+Paper            : —
+Probar           : 10, 20, 50, 100
+
+Parámetro        : lda_alpha  (alpha / doc_topic_prior)
+Qué controla     : Prior de Dirichlet sobre la distribución de tópicos por
+                   estación. Valores bajos (< 1) producen distribuciones
+                   dispersas (cada estación se especializa en pocos tópicos).
+                   Valores altos producen distribuciones más uniformes.
+                   None → sklearn usa 1/K automáticamente.
+Nuestro valor    : None  (1/K = 1/16 ≈ 0.0625, vía sklearn default)
+Paper            : —
+Probar           : None (1/K), 0.01, 0.1, 0.5, 1.0
+
+Parámetro        : lda_beta  (beta / topic_word_prior)
+Qué controla     : Prior de Dirichlet sobre la distribución de destinos por
+                   tópico. Valores bajos producen tópicos más especializados
+                   (cada tópico concentra el flujo en pocos destinos).
+                   Valores altos producen tópicos más difusos.
+                   None → sklearn usa 1/K automáticamente.
+Nuestro valor    : None  (1/K = 1/16 ≈ 0.0625, vía sklearn default)
+Paper            : —
+Probar           : None (1/K), 0.01, 0.1, 0.5, 1.0
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 2 — REGIÓN: LINE (Station Embeddings)
+────────────────────────────────────────────────────────────────────────────────
+
+  LINE no expone hiperparámetros en mdlf_params; la dimensión de salida es
+  fija a 64 (32 FO + 32 SO) según la implementación actual de StationLINE.
+
+  Paper            : 128  (64 FO + 64 SO, dentro del total D_R=256)
+  Nuestro valor    : 64   (32 FO + 32 SO)
+  *** DISCREPANCIA: usamos L=64 vs 128 del paper. Doblar la dimensión LINE
+      implicaría reentrenar StationLINE con dim=64 por componente.
+
+  Posibles mejoras (no implementadas):
+    · Aumentar dim LINE a 128 (64 FO + 64 SO) para acercarse al paper
+    · Exponer dim como hiperparámetro en StationLINE y mdlf_params
+    · En lugar de concatenar FO+SO, usar una combinación ponderada entrenable
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 3 — FEATURES INDIVIDUALES (IndividualFeatureExtractor)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : include_prox
+Qué controla     : Activa 2 sub-features adicionales (prox_tsi, prox_td) que
+                   cuentan validaciones históricas del usuario en otros modos
+                   (bus/metro) cercanas a estaciones de cercanías. Sube D_ind
+                   de 6 a 8.
+Nuestro valor    : True
+Paper            : no está, es innovación
+Probar           : False (modelo base), True (extendido)
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 4 — CROWD FEATURES (CrowdFeatureExtractor)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : n_weeks
+Qué controla     : Semanas de historial colectivo hacia atrás. Para cada
+                   semana m se calcula una distribución de destinos
+                   P(dest | origen, daytype, slot, fechas en ventana m).
+                   Determina D_crowd = n_weeks.
+Nuestro valor    : 2
+Paper            : 2
+Probar           : 1, 2, 3, 4
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 5 — NEIGHBORHOOD CROWD (ResidenceInferrer + NeighborhoodCrowdExtractor)
+           [Extensión propia, no en el paper original]
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : include_neighborhood_crowd
+Qué controla     : Activa crowd features filtradas al vecindario de residencia
+                   del viajero en lugar del origen del viaje. Añade D_nbcrowd
+                   = n_weeks dimensiones a V_static.
+Nuestro valor    : True
+Paper            : —  (no existe en el paper)
+Probar           : False (base), True (extendido)
+
+Parámetro        : dominance_ratio
+Qué controla     : Ratio mínimo (count_top / count_2ª) para confirmar que una
+                   estación es la parada de residencia del usuario. Más alto =
+                   más restrictivo (menos usuarios con residencia confirmada,
+                   mayor certeza).
+Nuestro valor    : 2.0
+Paper            : —
+Probar           : 1.5, 2.0, 3.0
+
+Parámetro        : min_days_residence
+Qué controla     : Días mínimos de historial que necesita un usuario para
+                   intentar inferir su residencia. Usuarios con menos días
+                   quedan sin residencia → ceros en esta feature.
+Nuestro valor    : 5
+Paper            : —
+Probar           : 3, 5, 10
+
+Parámetro        : min_neighbors
+Qué controla     : Usuarios distintos mínimos que deben compartir la parada
+                   de residencia para usar la señal del vecindario. Vecindarios
+                   más pequeños devuelven ceros (estimación demasiado ruidosa).
+Nuestro valor    : 10
+Paper            : —
+Probar           : 5, 10, 20, 50
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 5b — RESOLUCIÓN TEMPORAL (afecta a todos los módulos)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : slot_minutes
+Qué controla     : Duración en minutos de cada slot temporal. Controla la
+                   granularidad con la que se discretiza el día para:
+                     · OD Region Correlation: índice de E_table
+                       (n_entries = 2 × 1440/slot_minutes)
+                     · Crowd features: ventana de agrupación de viajes
+                     · Individual features: filtro de franja horaria
+                     · Neighborhood Crowd: ídem crowd
+                   Slots más finos (15 min) capturan mejor la hora punta
+                   pero tienen menos observaciones por celda. Slots más
+                   gruesos (60 min) son más robustos pero pierden detalle.
+Nuestro valor    : 30  (48 slots/día, 96 entradas en E_table)
+Paper            : 30  (48 slots/día)
+Probar           : 15  (96 slots, más fino), 30  (paper), 60  (24 slots, más robusto)
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 6 — OD REGION CORRELATION (atención bilineal)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : n_heads  (H)
+Qué controla     : Número de cabezas de atención bilineal. Cada cabeza aprende
+                   una proyección independiente de la correlación
+                   origen-destino modulada por el contexto temporal. Determina
+                   el tamaño de F'_R y, por tanto, la dimensión D = D_static+H.
+Nuestro valor    : 4
+Paper            : 4
+Probar           : 1, 2, 4, 8
+
+Parámetro        : d_t  (D_T)
+Qué controla     : Dimensión del embedding temporal E. Controla la capacidad
+                   del modelo para representar patrones hora/día. E_table tiene
+                   shape (96, D_T) y es completamente entrenable.
+Nuestro valor    : 16
+Paper            : 16
+Probar           : 8, 16, 32, 64
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 7 — CNN (_DestinationCNN)
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : cnn_channels  (C)
+Qué controla     : Número de canales en las dos capas Conv1d intermedias. Más
+                   canales = mayor capacidad para combinar las D features por
+                   estación.
+Nuestro valor    : 16
+Paper            : 16
+Probar           : 8, 16, 32, 64
+
+Parámetro        : kernel_size  (M)
+Qué controla     : Tamaño del kernel Conv1d aplicado sobre la dimensión N
+                   (estaciones). M=1 procesa cada estación de forma
+                   independiente. M>1 captura contexto entre estaciones vecinas
+                   en el índice (depende del orden de station_index).
+                   Debe ser impar para preservar N con padding=(M-1)//2.
+Nuestro valor    : 1
+Paper            : 1
+Probar           : 1, 3, 5
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 8 — ENTRENAMIENTO
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : optimizer
+Qué controla     : Algoritmo de optimización. 'sgd' usa SGD con momentum=0.9
+                   (fiel al paper). 'adamw' converge más rápido pero puede
+                   llegar a mínimos distintos.
+Nuestro valor    : 'sgd'  (momentum=0.9)
+Paper            : SGD con momentum; probaron valores de momentum 0 a 0.9,
+                   no especifican el valor final elegido
+Probar           : 'sgd', 'adamw'
+
+Parámetro        : lr
+Qué controla     : Learning rate inicial. Con lr_scheduler=False es constante.
+                   Con lr_scheduler=True es el valor máximo desde el que
+                   comienza el coseno.
+Nuestro valor    : 0.01
+Paper            : 0.01  (probaron rango 0.001~0.01, eligieron 0.01)
+Probar           : 0.001, 0.005, 0.01  (más bajo para AdamW)
+
+Parámetro        : weight_decay
+Qué controla     : Regularización L2 sobre los pesos (solo AdamW; SGD lo ignora).
+                   Penaliza pesos grandes y reduce sobreajuste. El default de
+                   PyTorch AdamW es 0.01, que ya se aplicaba implícitamente
+                   antes de exponerlo como hiperparámetro.
+Nuestro valor    : 0.01
+Paper            : —  (SGD no usa weight_decay en la formulación del paper)
+Probar           : 0.0 (sin regularización), 0.001, 0.01, 0.1
+
+Parámetro        : batch_size
+Qué controla     : Número de viajes por paso de gradiente. Batches más pequeños
+                   añaden ruido que puede ayudar a escapar de mínimos locales;
+                   más grandes dan gradientes más estables.
+Nuestro valor    : 64
+Paper            : —
+Probar           : 32, 64, 128, 256
+
+Parámetro        : n_epochs
+Qué controla     : Número de pasadas completas sobre el conjunto de train.
+                   Con lr_scheduler=False 20 épocas suelen ser suficientes para
+                   ver el plateau. Con lr_scheduler=True se recomienda ≥ 50
+                   para aprovechar la curva de decaimiento completa.
+Nuestro valor    : 50
+Paper            : —
+Probar           : 20, 50, 100
+
+Parámetro        : lr_scheduler
+Qué controla     : Activa CosineAnnealingLR: el LR decae suavemente desde lr
+                   hasta lr/100 siguiendo una curva coseno a lo largo de
+                   n_epochs. Evita el plateau de SGD con LR constante y suele
+                   mejorar la convergencia final sin hiperparámetros extra.
+Nuestro valor    : True
+Paper            : —  (no mencionado)
+Probar           : False (comportamiento paper), True
+
+────────────────────────────────────────────────────────────────────────────────
+BLOQUE 9 — PARTICIÓN DE DATOS
+────────────────────────────────────────────────────────────────────────────────
+
+Parámetro        : test_size
+Qué controla     : Fracción del labeled set reservada para test. El resto
+                   (1 - test_size) se usa para entrenar el modelo.
+Nuestro valor    : 0.2
+Paper            : —
+Probar           : 0.1, 0.2, 0.3
+
+Parámetro        : random_state
+Qué controla     : Semilla para reproducibilidad del split train/test y de la
+                   permutación de batches en cada época.
+Nuestro valor    : 42
+Paper            : —
+Probar           : 42, 0, 123  (comparar varianza entre seeds)
+
+────────────────────────────────────────────────────────────────────────────────
+RESUMEN DE DIMENSIONES RESULTANTES
+────────────────────────────────────────────────────────────────────────────────
+
+                          Nuestro valor    Paper (Zhao 2022)
+  K  (n_topics LDA)    :      16               128
+  L  (LINE dims)       :      64               128
+  D_R = K + L          :      80               256   ← diferencia principal
+  ─────────────────────────────────────────────────
+  D_ind                :   8  (prox=True)       6 (paper no usa prox)
+  D_crowd              :   2  (n_weeks=2)        2
+  D_nbcrowd            :   2  (nbcrowd=True)     0 (no existe en paper)
+  D_static             :  12                     8
+  ─────────────────────────────────────────────────
+  H   (n_heads)        :   4                     4
+  D   = D_static + H   :  16                    12
+  D_T (d_t)            :  16                    16
+  C   (cnn_channels)   :  16                    16
+  M   (kernel_size)    :   1                     1
+
+  V_static ∈ R^(n, N, 12)   [paper: R^(n, N, 8)]
+  V        ∈ R^(n, N, 16)   [paper: R^(n, N, 12)]
+
+  Parámetros entrenables ≈ 7.500  (paper ≈ 50.000+ por D_R=256)
+
+================================================================================

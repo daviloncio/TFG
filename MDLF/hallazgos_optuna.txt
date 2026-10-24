@@ -1,0 +1,222 @@
+BÚSQUEDA DE HIPERPARÁMETROS MDLF — RESUMEN DE ESTUDIOS Y HALLAZGOS
+====================================================================
+
+
+he lanzado varias ejecuciones de optuna distintas, con estrategia incremental: cada estudio fija los parámetros que convergieron en el anterior y explora los restantes. En concreto se han hecho tres estudios sobre el dataset de 50mil tarjetas (marzo 2025) y uno sobre 75mil (enero–junio 2025). El sampler es TPE (bayesiano) con una fase inicial aleatoria de 25–40 trials antes de que empiece a explotar los resultados previos. No se usa poda (pruner); en su lugar se usa un proxy de pocas épocas (5–7) para descartar malas configuraciones, y la mejor se reentrena con 30 épocas completas. El número de trials por estudio ha sido de 60 (v2) y 150–220 (v3 y 75mil). Los estudios persisten en SQLite y se pueden reanudar si se interrumpen. La métrica objetivo es Top-1 accuracy en test con split temporal (las últimas fechas del período como test, nunca aleatorio).
+
+en todos ellos converge la idea de que hay que incluir los módulos de include_prox (ayuda de las validaciones de otros medios) y include_neighborhood (crwod pero con vecinos con misma parada de residencia)
+
+ Hay que dejar claro que optuna dará una señal, pero no será definitiva para ese parámetro concreto. Por ello se han hecho tres ejecuciones con distitos datos y params constantes, 
+
+ESTUDIOS REALIZADOS
+-------------------
+
+1. mdlf_marzo2025_v2  (50mil, marzo 2025)
+   60 trials × 5 épocas proxy | reentrenamiento final: 30 épocas
+   - LINE: fijo desde optuna_line_cercanias (128 dims, optimizado independientemente)
+   - Todos los demás hiperparámetros: variables
+   - Mejor top-1 proxy: 0.7094 | final (30 ép): 0.7140
+
+2. mdlf_marzo2025_v3_line  (50mil, marzo 2025)
+   220 trials × 7 épocas proxy
+   - LINE: variable (dim, asymmetric, num_negative)
+   - Fijados por consistencia en top-15 de v2: include_prox=True, lr_scheduler=True,
+     lda_alpha_none=False, lda_use_periods=False, lda_token_granularity='temporal',
+     kernel_size=3
+   - Mejor top-1 proxy: 0.7221
+
+3. mdlf_junio2025_v2_line  (75mil, enero–junio 2025)  ← MUYY LARGO, EN CURSO
+   150 trials × 7 épocas proxy | reentrenamiento final: 30 épocas
+   - LINE: fijo (dim=64 → 128 dims, optimizado via optuna_line_cercanias)
+   - Fijados por evidencia cruzada v2+v3: norm=None, lda_use_periods=False,
+     lda_token_granularity='temporal', lda_alpha_none=False, include_prox=True,
+     lr_scheduler=True, kernel_size=3, cnn_channels=32, d_t=8
+   - Variables: n_topics, lda_alpha, lda_beta, lda_log_counts, lda_min_df,
+     lda_min_station_trips, n_heads, optimizer, lr, weight_decay, n_weeks,
+     include_neighborhood_crowd
+   - Mejor top-1 proxy hasta ahora (81/150 trials): 0.7070 (trial #57)
+
+
+HALLAZGOS PRINCIPALES (v3_line, 50mil, 220 trials)
+---------------------------------------------------
+
+MUY DETERMINANTES:
+
+- optimizer=AdamW aplasta a SGD (media 0.708 vs 0.619, mejor: 0.7221 vs 0.7049).
+  Con 200 trials AdamW vs 20 SGD la señal es contundente. El paper usa SGD.
+
+- include_neighborhood_crowd=True ayuda de forma clara (media 0.706 vs 0.690,
+  mejor con True: 0.7221 vs mejor con False: 0.7157). Diferencia en media de 1.6 pp.
+
+- norm=None es imprescindible (media 0.708 vs 0.634 con L2). L2 destruye el modelo.
+  Importancia fANOVA del 92% en v2 — el hallazgo más importante de todo el proceso.
+
+- n_heads=2 es claramente superior (media 0.709 vs 0.675 para H=4 y 0.633 para H=8).
+  H=4 es el valor del paper original y queda lejos del óptimo.
+
+- lda_log_counts=True (media 0.705 vs 0.685 sin él).
+
+MODERADAMENTE DETERMINANTES:
+
+- n_weeks=4 es el óptimo (media 0.710); con menos semanas (1-2) cae notablemente.
+
+- lda_min_df=1 es la mejor opción en 50mil (media 0.711), al contrario que en 75mil
+  donde lda_min_df=5 es mejor — sugiere que depende del volumen de datos.
+
+- lda_min_station_trips=100 tiene la mejor media en 50mil (0.708), opuesto al 75mil
+  donde el óptimo es 0. Otro parámetro que depende del dataset.
+
+- n_topics: sin consenso claro entre K=8, 32 y 48 (medias similares ~0.70).
+
+CONTRADICCIONES v3 (50mil) vs 75mil:
+- optimizer: AdamW gana en ambos (consistente ✓)
+- norm=None: consistente en ambos ✓
+- n_heads=2: consistente en ambos ✓
+- lda_log_counts=True: consistente en ambos ✓
+- include_neighborhood_crowd: True gana en ambos, señal más fuerte en 50mil ✓
+- lda_min_df: 1 en 50mil vs 5 en 75mil — depende del volumen?? ✗
+- lda_min_station_trips: 100 en 50mil vs 0 en 75mil — depende del dataset ✗
+- n_weeks: 4 en 50mil vs 5 en 75mil — diferencia pequeña ≈
+
+
+HALLAZGOS PRINCIPALES (75mil, 81 trials)
+-----------------------------------------
+
+MUY DETERMINANTES:
+
+- lda_log_counts=True es imprescindible (media 0.686 vs 0.577 sin él).
+  Sin él el modelo colapsa con frecuencia.
+
+- n_topics=48 es claramente superior (media 0.700 vs 0.552–0.629 para K=8,16,32).
+  K=32 tiene la peor media pese a ser la opción más común en la literatura.
+
+- lda_beta explícita (beta_none=False) es necesaria (media 0.698 vs 0.559 con beta=None).
+  Con beta simétrica el modelo es muy inestable.
+
+- lda_min_station_trips=0: filtrar estaciones por mínimo de viajes perjudica
+  (media 0.700 vs 0.636 con umbral=50 y 0.582 con umbral=100).
+
+- optimizer=AdamW domina claramente sobre SGD (mejor top-1: 0.7070 vs 0.6947,
+  media: 0.686 vs ~0.635). El paper original usa SGD — este es un hallazgo relevante.
+
+MODERADAMENTE DETERMINANTES:
+
+- n_heads=2 es mejor que H=4 (paper original) y H=8 (medias: 0.701, 0.586, 0.634).
+
+- lda_min_df=5 es la mejor opción (media 0.699); valores bajos introducen ruido en el LDA.
+
+- n_weeks=5 es el óptimo; más semanas (6–8) no aporta y menos (1–3) perjudica.
+
+SEÑAL DÉBIL:
+
+- include_neighborhood_crowd: ayuda (media 0.665 vs 0.645 sin él, mejor sin él: 0.7016
+  vs mejor con él: 0.7070), pero el efecto es pequeño.
+
+- norm=None fijado desde v2 por importancia fANOVA del 92% en ese estudio.
+  L2 resulta claramente perjudicial.
+
+SOBRE LINE Y LDA COMO MÓDULOS:
+
+- LINE y LDA no muestran un impacto claro en los estudios de ablación.
+  Están presentes en todos los trials y los hallazgos anteriores son sobre sus
+  hiperparámetros internos, no sobre su presencia o ausencia.
+  El estudio de ablación sobre 75mil (ablacion_75mil.ipynb) evaluará esto directamente.
+
+
+ATRIBUCIÓN DE FEATURES (= IMPORTANCIA DE FEATURES)
+----------------------------------------------------
+
+Qué es: para cada viaje del test, se mide cuánto cambia la distribución de
+probabilidad de destino al enmascarar cada bloque de features (poniéndolo a cero).
+La atribución de un bloque es la media de esa variación (distancia JS) sobre todos
+los viajes. Un valor más alto significa que el modelo depende más de ese bloque para
+predecir — atribución e importancia son sinónimos en este contexto.
+
+Se calcula automáticamente al final de cada ejecución del pipeline y queda guardada
+en el log del trial. Los valores que se muestran son la media de los 3 mejores trials
+de cada estudio (proxy de 7 épocas, no reentrenamiento final).
+
+  Bloque            | v3 50mil (trials 131,176,193) | 75mil (trials 57,52,73)
+  ------------------|-------------------------------|------------------------
+  TEMPORAL          |  0.1485  ←── muy alto         |  0.1287  ←── muy alto
+  CROWD             |  0.0166                        |  0.0231
+  NEIGHBORHOOD      |  0.0133                        |  0.0213
+  INDIVIDUAL        |  0.0122                        |  0.0174
+  REGION (LDA)      |  0.0007  ←── casi nulo         |  0.0121
+  REGION (LINE)     |  0.0005  ←── casi nulo         |  0.0052
+
+Observaciones:
+
+- TEMPORAL domina con diferencia en ambos datasets. El slot horario y día de la
+  semana son la señal más importante para predecir el destino.
+
+- REGION (LDA) y REGION (LINE) son prácticamente irrelevantes en 50mil (0.0007 y
+  0.0005) y mejoran en 75mil (0.0121 y 0.0052) pero siguen siendo los bloques más
+  débiles. Esto explica por qué quitar LDA o LINE no penaliza mucho en los
+  experimentos de ablación.
+
+- CROWD y NEIGHBORHOOD tienen importancias similares entre sí y claramente mayores
+  que INDIVIDUAL y REGION, lo que refuerza el hallazgo de que include_neighborhood
+  aporta señal real.
+
+- Los valores absolutos son mayores en 75mil que en 50mil en todos los bloques
+  excepto TEMPORAL — con más datos el modelo aprende a explotar mejor cada fuente
+  de información, pero la señal temporal sigue siendo la dominante.
+
+
+INCLUDE_PROX — EVIDENCIA DISPONIBLE
+-------------------------------------
+
+1. Optuna v2 50mil (variable, 60 trials):
+   - Con include_prox=True : media 0.696, máximo 0.7094 (45 trials)
+   - Con include_prox=False: media 0.645, máximo 0.7030 (15 trials)
+   - es débil pero demuestra que ayuda a .
+
+2. Ablación 50mil mdlf_marzo2025_v3_line (30 épocas, configuración óptima):
+   - Baseline (prox=True) : Top-1 = 0.7134
+   - Sin prox (prox=False): Top-1 = 0.6990
+   - Delta: −0.0144 (−1.4 pp). include_prox aporta de forma clara y consistente.
+   - al quitar prox la atribución de TEMPORAL sube a 0.582 (vs ~0.149 con prox),
+     lo que indica que el modelo compensa su ausencia apoyándose más en el slot horario.
+
+
+COMPARACIÓN CON LOS RESULTADOS DEL PAPER ORIGINAL
+---------------------------------------------------
+
+Resultados del paper (Zhao et al., IEEE T-ITS 2022):
+  SZData (Shenzhen, 166 estaciones): Top-1 = 0.576
+  SHData (Shanghai, 288 estaciones): Top-1 = 0.467
+
+Nuestros mejores resultados confirmados (30 épocas):
+  50mil tarjetas, marzo 2025  (93 estaciones): Top-1 = 0.7134
+  75mil tarjetas, enero–junio (93 estaciones): Top-1 = 0.7025
+
+Mejor configuración hasta ahora (trial #57, 75mil):
+  n_topics=48, lda_log_counts=True, lda_beta=0.0029, lda_min_df=5,
+  n_heads=2, optimizer=adamw, lr=0.0056, n_weeks=5,
+  include_prox=True, include_neighborhood_crowd=True, norm=None
+
+IMPORTANTE — los conjuntos a predecir son distintos!!!!
+
+El paper define un "viaje ocasional" (occasional trip) como aquel cuyo par
+origen-destino no coincide con ningún patrón de viaje regular del usuario.
+Un patrón regular se define como un par (estación_origen, estación_destino,
+franja_horaria) que aparece con suficiente frecuencia en el historial — es decir,
+rutas que el usuario hace habitualmente a la misma hora. Aproximadamente el 55%
+de los viajes quedan clasificados como ocasionales y son los únicos que se predicen.
+
+Nosotros predecimos todos los viajes unlinked de cercanías sin ningún filtro por
+patrón. Esto incluye tanto usuarios con historial regular como usuarios infrecuentes
+o nuevos, para quienes el historial individual aporta poca o ninguna señal. En ese
+sentido nuestro conjunto es más heterogéneo y difícil, ya que el modelo no puede
+apoyarse en la regularidad del usuario para descartar destinos improbables.
+
+Dicho esto, la comparación directa de accuracies no es del todo justa: nuestra red
+tiene solo 93 destinos posibles frente a 166 y 288 del paper, lo que favorece
+mecánicamente una mayor accuracy en clasificación. El resultado relevante es que
+el modelo MDLF adaptado al contexto madrileño, con las extensiones propias
+(include_prox, include_neighborhood_crowd) y la búsqueda de hiperparámetros,
+supera ampliamente los resultados del paper en su configuración original.
+
+APARTE: ESTACIONES FANTASMA. 
+

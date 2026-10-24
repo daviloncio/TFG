@@ -1,0 +1,15 @@
+# Datos del CRTM y derivados: no subir nunca
+*.csv
+*.parquet
+*.pkl
+*.xlsx
+*.zip
+!MDLF/validacion_temporal_results.csv
+!MDLF/LINE/output/optuna_trials_cercanias.csv
+almacen/
+matrices/
+
+# Entorno
+__pycache__/
+.ipynb_checkpoints/
+.venv/
